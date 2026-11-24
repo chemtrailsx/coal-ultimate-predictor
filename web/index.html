@@ -1,6 +1,6 @@
-<title>Coal Ultimate Analysis Predictor</title>
+<title>Coal Proximate–Ultimate Predictor</title>
 <meta name="claude:viewport-fit-sides" content="cover">
-<meta name="description" content="Predict the ultimate analysis (C, H, N, S, O) of coal from its proximate analysis. Neural-network model trained on US and Indian coal data.">
+<meta name="description" content="Convert coal proximate analysis (M, VM, Ash, FC) to ultimate analysis (C, H, N, S, O) and back. Neural-network models trained on US and Indian coal data.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600;700&display=swap">
 <style>
@@ -17,6 +17,7 @@
   --err-bg: #f9e0dd; --err-fg: #8a2117;
   /* composition bar colours */
   --c-C: #2f3a40; --c-H: #4f86a8; --c-N: #7c9a5e; --c-S: #c9a227; --c-O: #c96f4a; --c-M: #9fc3d8; --c-A: #b8b2a6;
+  --c-VM: #8a6bb0; --c-FC: #3d4a3f; --c-Ash: #b8b2a6;
   --f-head: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
   --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --f-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
@@ -25,11 +26,13 @@
   --bg: #15181a; --panel: #1e2225; --ink: #e6e8e6; --muted: #9aa2a6; --line: #343a3e;
   --accent: #e08a48; --accent-soft: #3a2a1e; --warn-bg: #3a3017; --warn-fg: #f1d48a; --err-bg: #42201c; --err-fg: #f6b2a8;
   --c-C: #d9dee0; --c-H: #6aa6cc; --c-N: #97b876; --c-S: #e0bb3e; --c-O: #e0875f; --c-M: #3f6a85; --c-A: #6d675d;
+  --c-VM: #a98bd0; --c-FC: #c9d3c6; --c-Ash: #6d675d;
   color-scheme: dark; } }
 :root[data-theme="dark"] {
   --bg: #15181a; --panel: #1e2225; --ink: #e6e8e6; --muted: #9aa2a6; --line: #343a3e;
   --accent: #e08a48; --accent-soft: #3a2a1e; --warn-bg: #3a3017; --warn-fg: #f1d48a; --err-bg: #42201c; --err-fg: #f6b2a8;
   --c-C: #d9dee0; --c-H: #6aa6cc; --c-N: #97b876; --c-S: #e0bb3e; --c-O: #e0875f; --c-M: #3f6a85; --c-A: #6d675d;
+  --c-VM: #a98bd0; --c-FC: #c9d3c6; --c-Ash: #6d675d;
   color-scheme: dark; }
 
 * { box-sizing: border-box; }
@@ -58,6 +61,13 @@ p { margin: 0; }
 .seg input:checked + label { background: var(--accent-soft); color: var(--ink); box-shadow: inset 0 -2px 0 var(--accent); }
 .seg input:focus-visible + label { outline: 2px solid var(--accent); outline-offset: -2px; }
 
+.seg.four { grid-template-columns: repeat(4, 1fr); }
+@media (max-width: 520px) { .seg.four { grid-template-columns: repeat(2, 1fr); } .seg.four label:nth-of-type(3) { border-left: 0; } .seg.four label:nth-of-type(n+3) { border-top: 1px solid var(--line); } }
+.dir { max-width: 560px; }
+.dir label { font-weight: 600; padding: 11px 8px; }
+.fields5 { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 14px; }
+.bigrow.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 520px) { .bigrow.four { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .field { display: grid; gap: 5px; min-width: 0; }
 .field label { font-size: 0.84rem; color: var(--muted); }
@@ -113,12 +123,17 @@ footer { font-size: 0.78rem; color: var(--muted); border-top: 1px solid var(--li
 
 <div class="wrap">
   <header>
-    <div class="eyebrow">Proximate → Ultimate · neural network</div>
-    <h1>Coal Ultimate Analysis Predictor</h1>
-    <p class="lede">Enter moisture, volatile matter and ash from a proximate analysis. The model returns carbon, hydrogen, nitrogen, sulphur and oxygen. It accepts US (ASTM, as-received) and Indian (IS&nbsp;1350, air-dried) reporting, lignite to anthracite.</p>
+    <div class="eyebrow">Proximate ⇄ Ultimate · neural networks</div>
+    <h1>Coal Proximate–Ultimate Predictor</h1>
+    <p class="lede">Convert a proximate analysis (moisture, volatile matter, ash, fixed carbon) into an ultimate analysis (carbon, hydrogen, nitrogen, sulphur, oxygen), or the other way round. Works with US (ASTM, as-received) and Indian (IS&nbsp;1350, air-dried) reporting, lignite to anthracite.</p>
   </header>
 
-  <section class="grid">
+  <div class="seg dir" role="radiogroup" aria-label="Direction">
+    <input type="radio" name="dir" id="d-pu" value="p2u" checked><label for="d-pu">Proximate → Ultimate</label>
+    <input type="radio" name="dir" id="d-up" value="u2p"><label for="d-up">Ultimate → Proximate</label>
+  </div>
+
+  <section class="grid" id="sec-a">
     <form class="panel" id="form" autocomplete="off" novalidate>
       <div class="panel-head"><h2>Proximate analysis</h2><span class="tag">wt %</span></div>
 
@@ -178,6 +193,62 @@ footer { font-size: 0.78rem; color: var(--muted); border-top: 1px solid var(--li
     </section>
   </section>
 
+  <section class="grid" id="sec-b" hidden>
+    <form class="panel" id="form-b" autocomplete="off" novalidate>
+      <div class="panel-head"><h2>Ultimate analysis</h2><span class="tag">wt %</span></div>
+      <div class="field">
+        <label for="example-b">Load an example</label>
+        <select id="example-b"><option value="">Choose a sample…</option></select>
+      </div>
+      <div class="field">
+        <span class="hint" id="ubasis-label">Basis of your values</span>
+        <div class="seg four" role="radiogroup" aria-labelledby="ubasis-label">
+          <input type="radio" name="ubasis" id="u-ar" value="as-received" checked><label for="u-ar">As-received<small>ARB</small></label>
+          <input type="radio" name="ubasis" id="u-ad" value="air-dried"><label for="u-ad">Air-dried<small>ADB</small></label>
+          <input type="radio" name="ubasis" id="u-db" value="dry"><label for="u-db">Dry<small>DB</small></label>
+          <input type="radio" name="ubasis" id="u-daf" value="daf"><label for="u-daf">Dry ash-free<small>DAF</small></label>
+        </div>
+      </div>
+      <div class="fields5">
+        <div class="field"><label for="uC"><b>Carbon</b> C</label><input id="uC" type="number" step="0.01" min="0" max="100" value="47.77" inputmode="decimal"></div>
+        <div class="field"><label for="uH"><b>Hydrogen</b> H</label><input id="uH" type="number" step="0.01" min="0" max="100" value="3.04" inputmode="decimal"></div>
+        <div class="field"><label for="uN"><b>Nitrogen</b> N</label><input id="uN" type="number" step="0.01" min="0" max="100" value="1.00" inputmode="decimal"></div>
+        <div class="field"><label for="uO"><b>Oxygen</b> O</label><input id="uO" type="number" step="0.01" min="0" max="100" value="6.51" inputmode="decimal"></div>
+        <div class="field"><label for="uS"><b>Sulphur</b> S</label><input id="uS" type="number" step="0.01" min="0" max="100" value="0.68" inputmode="decimal"></div>
+      </div>
+      <div class="fc-line"><span>C + H + N + O + S <b id="u-org">58.99</b></span><span id="u-rest-wrap">Moisture + ash, exact <b id="u-rest">41.01</b></span></div>
+      <div class="optional">
+        <div class="fields">
+          <div class="field"><label for="uM" id="uM-label"><b>Measured moisture</b>, optional</label><input id="uM" type="number" step="0.01" min="0" max="90" placeholder="unknown" inputmode="decimal"></div>
+          <div class="field"><label for="uA" id="uA-label"><b>…or measured ash</b>, optional</label><input id="uA" type="number" step="0.01" min="0" max="90" placeholder="unknown" inputmode="decimal"></div>
+        </div>
+        <span class="hint" id="u-hint">Moisture + ash is fixed by the ultimate analysis. How it splits into moisture and ash is estimated from coal rank unless you enter one of them, which makes both exact.</span>
+      </div>
+    </form>
+
+    <section class="panel" aria-live="polite">
+      <div class="panel-head"><h2>Predicted proximate analysis</h2><span class="tag" id="basis-tag-b">as-received basis</span></div>
+      <div class="msgs" id="msgs-b"></div>
+      <div id="result-b" hidden>
+        <div style="display:grid; gap:18px">
+          <div class="bigrow four" id="big-b"></div>
+          <div id="bar-wrap-b">
+            <div class="bar" id="bar-b" role="img" aria-label="Proximate composition of the sample"></div>
+            <div class="legend" id="legend-b" style="margin-top:8px"></div>
+          </div>
+          <div class="tbl-wrap">
+            <table>
+              <thead><tr><th>Parameter</th><th id="th-basis-b">As-received</th><th>Dry</th><th>Dry ash-free</th><th>Typical error</th></tr></thead>
+              <tbody id="tbody-b"></tbody>
+            </table>
+          </div>
+          <div class="btns"><button type="button" id="copy-b">Copy results</button></div>
+          <p class="note">Typical error is the mean absolute error on Indian mines the model never saw during training, in percentage points (pp). “exact” means fixed by mass balance. Fixed carbon is by difference.</p>
+        </div>
+      </div>
+    </section>
+  </section>
+
   <section class="below">
     <div class="panel method">
       <h2>How it works</h2>
@@ -185,6 +256,7 @@ footer { font-size: 0.78rem; color: var(--muted); border-top: 1px solid var(--li
         <li><b>Strip out moisture and ash.</b> The composition of the organic coal substance depends on rank, which is the same physics in Indian and US coals. Working on a dry, ash-free basis also makes the method independent of the reporting basis.</li>
         <li><b>Neural-network ensemble.</b> <span id="nn-desc">Several networks</span> read VM<sub>daf</sub>, ash/organic matter and moisture/organic matter, and predict C, H, N and S on a dry, ash-free basis.</li>
         <li><b>Oxygen by difference</b>, then conversion back to your basis, so that the sum closes exactly.</li>
+        <li><b>Reverse direction.</b> C + H + N + O + S gives the organic matter, so moisture + ash = 100 − (C + H + N + O + S) exactly. One network ensemble predicts VM<sub>daf</sub> from the dry, ash-free elemental composition; a second estimates the moisture/ash split, which becomes exact if you enter the measured moisture.</li>
       </ol>
       <div class="formula">Org    = 100 − M − A
 VM_daf = 100 · VM / Org
@@ -194,14 +266,18 @@ O      = Org − C − H − N − S</div>
     <div class="panel">
       <h2>Accuracy on unseen coal</h2>
       <p class="note">Mean absolute error in percentage points. Indian: each mine or block held out in turn. US: whole sample groups held out. World: 60 countries never used in training.</p>
+      <h3>Proximate → Ultimate</h3>
       <div class="tbl-wrap"><table><thead><tr><th>Test set</th><th>C</th><th>H</th><th>N</th><th>O</th><th>S</th></tr></thead><tbody id="acc"></tbody></table></div>
+      <h3>Ultimate → Proximate <span class="tag">as-received</span></h3>
+      <div class="tbl-wrap"><table><thead><tr><th>Test set</th><th>M</th><th>VM</th><th>Ash</th><th>FC</th><th>VM, M given</th></tr></thead><tbody id="acc-b"></tbody></table></div>
+      <p class="note">Moisture and ash become exact when the measured moisture is entered.</p>
       <p class="note" id="data-note"></p>
     </div>
   </section>
 
   <footer>
     <span>Data: USGS COALQUAL v3 (Palmer et al., 2015); USGS–Geological Survey of India, OFR 2011-1296 (Trippi &amp; Tewalt, 2011); USGS World Coal Quality Inventory, OFR 2010-1196 (Tewalt et al., 2010).</span>
-    <span>Sulphur is only a rough estimate unless you enter a measured value. Indian training data cover the Sohagpur coalfield and Rajasthan lignite; errors may be larger for other coalfields.</span>
+    <span>Proximate → ultimate: sulphur is only a rough estimate unless you enter a measured value. Ultimate → proximate: enter the measured moisture for an exact moisture/ash split. Indian training data cover the Sohagpur coalfield and Rajasthan lignite; errors may be larger for other coalfields.</span>
   </footer>
 </div>
 
@@ -288,6 +364,57 @@ function predictFull(model, meta, inp) {
   ELEMENTS.forEach((k, i) => { basis[k] = out[i]; dry[k] = out[i] * 100 / (100 - M); daf[k] = 100 * out[i] / org; });
   return { errors, warnings, basis, dry, daf, fc, org, M, Ash };
 }
+function predictProximate(model, meta, inp) {
+  // inp: {basis: 'as-received'|'air-dried'|'dry'|'daf', C,H,N,O,S, M (nullable), Ash (nullable)}
+  const errors = [], warnings = [];
+  const isNum = v => v !== null && v !== undefined && !Number.isNaN(v);
+  let vals = ["C", "H", "N", "O", "S"].map(k => inp[k]);
+  if (!vals.every(isNum)) { errors.push("Enter C, H, N, O and S."); return { errors, warnings }; }
+  if (Math.min(...vals) < 0) errors.push("Values cannot be negative.");
+  if (vals[0] <= 0 || vals[1] <= 0) errors.push("Carbon and hydrogen must be above zero.");
+  const Mg = isNum(inp.M) ? inp.M : null, Ag = isNum(inp.Ash) ? inp.Ash : null;
+  if ((Mg !== null && Mg < 0) || (Ag !== null && Ag < 0)) errors.push("Moisture and ash cannot be negative.");
+  if (errors.length) return { errors, warnings };
+  const tot = vals.reduce((a, b) => a + b, 0);
+  let org, Mv = null, Av = null, src, basisEff = inp.basis;
+  if (inp.basis === "daf") {
+    if (Math.abs(tot - 100) > 1) { errors.push(`On a dry, ash-free basis C + H + N + O + S should be 100 %, but it is ${tot.toFixed(2)} %.`); return { errors, warnings }; }
+    vals = vals.map(v => 100 * v / tot);
+    if (Mg !== null && Ag !== null) {
+      org = 100 - Mg - Ag;
+      if (org <= 0) { errors.push("Moisture + ash must be less than 100 %."); return { errors, warnings }; }
+      vals = vals.map(v => v * org / 100); basisEff = "as-received"; Mv = Mg; Av = Ag; src = "given";
+    } else { org = 100; src = "not determinable"; basisEff = "daf"; }
+  } else {
+    if (tot > 100 + 1e-9) { errors.push(`C + H + N + O + S is ${tot.toFixed(2)} %, more than 100 %. Check the values and the basis.`); return { errors, warnings }; }
+    org = tot; const rest = 100 - org;
+    if (inp.basis === "dry") { Mv = 0; Av = rest; src = "zero (dry basis)"; }
+    else if (Mg !== null) {
+      if (Mg > rest + 1e-9) { errors.push(`Moisture cannot exceed 100 − (C+H+N+O+S) = ${rest.toFixed(2)} %.`); return { errors, warnings }; }
+      Mv = Mg; Av = rest - Mg; src = "given";
+    } else if (Ag !== null) {
+      if (Ag > rest + 1e-9) { errors.push(`Ash cannot exceed 100 − (C+H+N+O+S) = ${rest.toFixed(2)} %.`); return { errors, warnings }; }
+      Mv = rest - Ag; Av = Ag; src = "from given ash";
+    } else {
+      const D = vals.map(v => 100 * v / org);
+      const mo = model.rev_moist.predictDaf([[...D, (100 - org) / org]])[0][0];
+      Mv = Math.min(Math.max(mo * org, 0), rest); Av = rest - Mv; src = "predicted";
+    }
+  }
+  if (org < 15) warnings.push("Less than 15 % organic matter (C + H + N + O + S): this is closer to carbonaceous shale than coal and is outside the training range.");
+  const vsum = vals.reduce((a, b) => a + b, 0);
+  const D = vals.map(v => 100 * v / vsum);
+  const r = meta.reverse.ranges;
+  if (D[0] < r.Cdaf[0] || D[0] > r.Cdaf[1]) warnings.push(`Carbon on a dry, ash-free basis is ${D[0].toFixed(1)} %, outside the training range (${r.Cdaf[0].toFixed(0)}–${r.Cdaf[1].toFixed(0)} %). Treat the result with caution.`);
+  if (D[3] < r.Odaf[0] || D[3] > r.Odaf[1]) warnings.push(`Oxygen on a dry, ash-free basis is ${D[3].toFixed(1)} %, outside the training range (${r.Odaf[0].toFixed(0)}–${r.Odaf[1].toFixed(0)} %).`);
+  const vmDaf = Math.min(Math.max(model.rev_vm.predictDaf([D])[0][0], 0), 100);
+  const daf = { VM: vmDaf, FC: 100 - vmDaf };
+  if (Mv === null) return { errors, warnings, basis: null, dry: null, daf, src, org, basisEff };
+  const orgB = 100 - Mv - Av, VM = vmDaf * orgB / 100, f = 100 / (100 - Mv);
+  const basis = { M: Mv, VM, Ash: Av, FC: orgB - VM };
+  const dry = { M: 0, VM: VM * f, Ash: Av * f, FC: (orgB - VM) * f };
+  return { errors, warnings, basis, dry, daf, src, org: orgB, basisEff };
+}
 // CORE-END
 
 const NAMES = { C: "Carbon", H: "Hydrogen", N: "Nitrogen", O: "Oxygen", S: "Sulphur" };
@@ -336,7 +463,96 @@ function render() {
     `<tr class="sum"><td>Sum with moisture and ash</td><td>${fmt(total)}</td><td></td><td>100.00</td><td></td></tr>`;
 }
 
+const PROX = ["M", "VM", "Ash", "FC"];
+const PNAMES = { M: "Moisture", VM: "Volatile matter", Ash: "Ash", FC: "Fixed carbon" };
+const EXAMPLES_B = [   // real samples (USGS–GSI India, USGS COALQUAL); M = reported moisture
+  ["Indian bituminous, Sohagpur AML-1", "as-received", [63.35, 4.00, 1.40, 8.09, 0.57], 9.71],
+  ["Indian high-ash bituminous", "air-dried", [47.77, 3.04, 1.00, 6.51, 0.68], null],
+  ["Indian lignite, Rajasthan", "as-received", [39.15, 2.82, 0.71, 10.92, 1.41], null],
+  ["US bituminous, COALQUAL D160759", "as-received", [78.8, 4.46, 1.3, 3.94, 0.7], 4.8],
+  ["US bituminous, dry ash-free", "daf", [84.5, 5.48, 1.67, 6.78, 1.57], null],
+];
+let lastB = null;
+
+function renderB() {
+  if (!MODEL) return;
+  const basis = document.querySelector('input[name="ubasis"]:checked').value;
+  const inp = { basis, C: num("uC"), H: num("uH"), N: num("uN"), O: num("uO"), S: num("uS"), M: num("uM"), Ash: num("uA") };
+  const isDaf = basis === "daf", isDry = basis === "dry";
+  $("uM").disabled = isDry; $("uA").disabled = isDry || (!isDaf && inp.M !== null);
+  $("uM-label").innerHTML = isDaf ? "<b>As-received moisture</b>, optional" : "<b>Measured moisture</b>, optional";
+  $("uA-label").innerHTML = isDaf ? "<b>As-received ash</b>, optional" : "<b>…or measured ash</b>, optional";
+  $("u-hint").textContent = isDaf ? "Enter both as-received moisture and ash to get a full proximate analysis; otherwise only VM and FC on a dry, ash-free basis are returned."
+    : isDry ? "On a dry basis ash = 100 − (C + H + N + O + S) exactly and moisture is zero."
+    : "Moisture + ash is fixed by the ultimate analysis. How it splits into moisture and ash is estimated from coal rank unless you enter one of them, which makes both exact.";
+  if (!isDaf && inp.M !== null) inp.Ash = null;
+  if (isDaf && (inp.M === null || inp.Ash === null)) { inp.M = null; inp.Ash = null; }
+  if (isDry) { inp.M = null; inp.Ash = null; }
+  const vals = ["C", "H", "N", "O", "S"].map(k => inp[k]);
+  const tot = vals.every(v => v !== null) ? vals.reduce((a, b) => a + b, 0) : NaN;
+  $("u-org").textContent = Number.isNaN(tot) ? "—" : fmt(tot);
+  $("u-rest-wrap").hidden = isDaf;
+  $("u-rest").textContent = Number.isNaN(tot) ? "—" : fmt(100 - tot);
+  const res = predictProximate(MODEL, META, inp);
+  const msgs = $("msgs-b"); msgs.innerHTML = "";
+  res.errors.forEach(e => { const d = document.createElement("div"); d.className = "msg err"; d.textContent = e; msgs.appendChild(d); });
+  res.warnings.forEach(e => { const d = document.createElement("div"); d.className = "msg warn"; d.textContent = e; msgs.appendChild(d); });
+  if (res.errors.length) { $("result-b").hidden = true; lastB = null; return; }
+  $("result-b").hidden = false; lastB = res;
+  const acc = META.reverse.accuracy.india;
+  const exactMA = res.src !== "predicted";
+  const errTxt = k => (k === "M" || k === "Ash") ? (exactMA ? "exact" : "± " + acc[k].toFixed(2) + " pp") : "± " + acc[k].toFixed(2) + " pp";
+  const shown = res.basisEff === "daf" ? "dry ash-free" : res.basisEff;
+  $("basis-tag-b").textContent = shown + " basis";
+  $("th-basis-b").textContent = shown.charAt(0).toUpperCase() + shown.slice(1);
+  if (res.basis === null) {
+    $("big-b").innerHTML = ["VM", "FC"].map(k => `<div class="el" style="--sw: var(--c-${k})"><span class="sym">${k}<sub>daf</sub></span><span class="name">${PNAMES[k]}</span>
+      <div class="val">${fmt(res.daf[k])}</div><span class="pm">± ${acc[k].toFixed(2)}</span></div>`).join("");
+    $("bar-wrap-b").hidden = true;
+    $("tbody-b").innerHTML = ["VM", "FC"].map(k => `<tr><td>${PNAMES[k]}</td><td>—</td><td>—</td><td>${fmt(res.daf[k])}</td><td>± ${acc[k].toFixed(2)} pp</td></tr>`).join("")
+      + `<tr class="sum"><td colspan="5">Enter as-received moisture and ash for M, VM, Ash and FC.</td></tr>`;
+    return;
+  }
+  $("bar-wrap-b").hidden = false;
+  $("big-b").innerHTML = PROX.map(k => `<div class="el" style="--sw: var(--c-${k})"><span class="sym">${k}</span><span class="name">${PNAMES[k]}</span>
+    <div class="val">${fmt(res.basis[k])}</div><span class="pm">${errTxt(k).replace(" pp", "")}</span></div>`).join("");
+  $("bar-b").innerHTML = PROX.map(k => `<span style="flex-basis:${Math.max(res.basis[k], 0)}%; background: var(--c-${k})" title="${k} ${fmt(res.basis[k])} %"></span>`).join("");
+  $("legend-b").innerHTML = PROX.map(k => `<span><i style="background: var(--c-${k})"></i>${PNAMES[k]} ${fmt(res.basis[k])}</span>`).join("");
+  const dafCell = k => (k === "VM" || k === "FC") ? fmt(res.daf[k]) : "—";
+  $("tbody-b").innerHTML = PROX.map(k => `<tr><td>${PNAMES[k]}${k === "FC" ? " (by difference)" : ""}</td><td>${fmt(res.basis[k])}</td><td>${fmt(res.dry[k])}</td><td>${dafCell(k)}</td><td>${errTxt(k)}</td></tr>`).join("")
+    + `<tr class="sum"><td>Sum</td><td>${fmt(PROX.reduce((s, k) => s + res.basis[k], 0))}</td><td>${fmt(PROX.reduce((s, k) => s + res.dry[k], 0))}</td><td>100.00</td><td>moisture: ${res.src}</td></tr>`;
+}
+
+function setDirection() {
+  const d = document.querySelector('input[name="dir"]:checked').value;
+  $("sec-a").hidden = d !== "p2u"; $("sec-b").hidden = d !== "u2p";
+  try { localStorage.setItem("coal-dir", d); } catch (e) { /* storage unavailable */ }
+}
+
 function setupStatic() {
+  document.querySelectorAll('input[name="dir"]').forEach(r => r.addEventListener("change", setDirection));
+  try { const d = localStorage.getItem("coal-dir"); if (d === "u2p") { $("d-up").checked = true; } } catch (e) { /* ignore */ }
+  setDirection();
+  const selB = $("example-b");
+  EXAMPLES_B.forEach((e, i) => { const o = document.createElement("option"); o.value = i; o.textContent = `${e[0]} (${{ "daf": "DAF", "air-dried": "ADB" }[e[1]] || "ARB"})`; selB.appendChild(o); });
+  selB.addEventListener("change", () => {
+    if (selB.value === "") return;
+    const [, b, v, m] = EXAMPLES_B[+selB.value];
+    document.querySelector(`input[name="ubasis"][value="${b}"]`).checked = true;
+    ["uC", "uH", "uN", "uO", "uS"].forEach((id, i) => { $(id).value = v[i].toFixed(2); });
+    $("uM").value = m === null ? "" : m.toFixed(2); $("uA").value = "";
+    renderB();
+  });
+  $("form-b").addEventListener("input", e => { if (e.target.id !== "example-b") renderB(); });
+  $("form-b").addEventListener("submit", e => e.preventDefault());
+  $("copy-b").addEventListener("click", () => {
+    if (!lastB) return;
+    const r = lastB, lines = [];
+    if (r.basis) { lines.push(`Parameter\t${r.basisEff}\tDry`); PROX.forEach(k => lines.push(`${k}\t${fmt(r.basis[k])}\t${fmt(r.dry[k])}`)); }
+    lines.push(`VM daf\t${fmt(r.daf.VM)}`, `FC daf\t${fmt(r.daf.FC)}`);
+    const btn = $("copy-b"), done = ok => { btn.textContent = ok ? "Copied" : "Select and copy the table"; setTimeout(() => (btn.textContent = "Copy results"), 1600); };
+    try { navigator.clipboard.writeText(lines.join("\n")).then(() => done(true), () => done(false)); } catch (e) { done(false); }
+  });
   const sel = $("example");
   EXAMPLES.forEach((e, i) => { const o = document.createElement("option"); o.value = i; o.textContent = `${e[0]} (${e[1] === "air-dried" ? "ADB" : "ARB"})`; sel.appendChild(o); });
   sel.addEventListener("change", () => {
@@ -366,13 +582,18 @@ async function init() {
     if (!r || !r.ok) r = await fetch("../model/coal_model.json");   // repository layout (GitHub Pages)
     if (!r.ok) throw new Error("HTTP " + r.status);
     META = await r.json();
-    MODEL = { with_moisture: makeNet(META.models.with_moisture), no_moisture: makeNet(META.models.no_moisture) };
+    MODEL = { with_moisture: makeNet(META.models.with_moisture), no_moisture: makeNet(META.models.no_moisture),
+              rev_vm: makeNet(META.reverse.vm), rev_moist: makeNet(META.reverse.moist) };
     $("nn-desc").textContent = `${META.n_mlps} neural networks (hidden layers ${META.hidden.join(" × ")}, blended with a quadratic regression)`;
     $("acc").innerHTML = META.accuracy.table.map(t => `<tr><td>${t["Test set"]}</td>${ELEMENTS.map(k => `<td>${t[k].toFixed(2)}</td>`).join("")}</tr>`).join("");
     $("data-note").textContent = "Training data: " + META.data.map(d => `${d.Dataset}: ${d.Samples.toLocaleString("en")}`).join(" · ");
+    const ra = META.reverse.accuracy;
+    $("acc-b").innerHTML = [ra.india, ra.us].map(t => `<tr><td>${t["Test set"]}</td>${["M", "VM", "Ash", "FC", "VM (M given)"].map(k => `<td>${t[k].toFixed(2)}</td>`).join("")}</tr>`).join("");
     render();
+    renderB();
   } catch (e) {
     $("msgs").innerHTML = `<div class="msg err">The model file could not be loaded (${e.message}). Reload the page to try again.</div>`;
+    $("msgs-b").innerHTML = $("msgs").innerHTML;
   }
 }
 init();

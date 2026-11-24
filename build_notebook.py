@@ -8,10 +8,13 @@ md = lambda s: cells.append(nbf.v4.new_markdown_cell(s.strip()))
 code = lambda s: cells.append(nbf.v4.new_code_cell(s.strip()))
 
 md(r"""
-# Predicting the Ultimate Analysis of Coal from its Proximate Analysis
-### A neural-network model for US and Indian coals
+# Coal Proximate ⇄ Ultimate Analysis Prediction
+### Neural-network models for US and Indian coals, in both directions
 
-**Problem.** The *proximate analysis* of coal (moisture **M**, volatile matter **VM**, ash **A**, fixed carbon **FC**) is cheap and is measured routinely in every coal laboratory and power plant. The *ultimate analysis* (carbon **C**, hydrogen **H**, nitrogen **N**, sulphur **S**, oxygen **O**) needs an elemental analyser, but it is what combustion, gasification and emission calculations require. This notebook builds a model that predicts the ultimate analysis from the proximate analysis.
+**Problem.** The *proximate analysis* of coal (moisture **M**, volatile matter **VM**, ash **A**, fixed carbon **FC**) is cheap and is measured routinely in every coal laboratory and power plant. The *ultimate analysis* (carbon **C**, hydrogen **H**, nitrogen **N**, sulphur **S**, oxygen **O**) needs an elemental analyser, but it is what combustion, gasification and emission calculations require. This notebook builds models for **both directions**:
+
+* **Part A — proximate → ultimate** (sections 2–6): predict C, H, N, S, O from M, VM, Ash.
+* **Part B — ultimate → proximate** (section 7): predict M, VM, Ash, FC from C, H, N, S, O.
 
 **Approach in brief**
 1. Data: 7,800 coal samples that have *both* analyses: USGS COALQUAL (United States) and USGS–Geological Survey of India data (Indian bituminous coal and lignite) for training; the USGS World Coal Quality Inventory (1,239 samples, 60 countries) as an independent external test set.
@@ -19,7 +22,8 @@ md(r"""
 3. Models compared: linear regression, quadratic regression, gradient boosting, a single neural network and an **ensemble of neural networks** (multilayer perceptrons), blended with a quadratic regression.
 4. Honest validation: Indian accuracy is measured on **whole mines/coalfield blocks the model never saw** (leave-one-site-out), US accuracy on whole held-out sample groups, and generalisation on 60 countries that are not in the training data at all.
 5. Oxygen is computed **by difference** so the result is physically consistent: C + H + N + S + O + M + Ash = 100 %.
-6. The final model is exported to `model/coal_model.json`, which the deployed web app uses.
+6. The reverse direction uses the same physics: C + H + N + S + O fixes the organic matter, so moisture + ash is known exactly; the networks learn the volatile-matter share and the moisture/ash split.
+7. The final models are exported to `model/coal_model.json`, which the deployed web app uses.
 """)
 
 code(r"""
@@ -107,6 +111,8 @@ allc.groupby("dataset")[COLS].agg(["mean", "min", "max"]).round(1).T.unstack(lev
 """)
 
 md(r"""
+# Part A — Proximate → Ultimate
+
 ## 2. Feature engineering: the dry, ash-free route
 
 Moisture and ash are not part of the coal substance. Removing them:
@@ -175,13 +181,18 @@ POLY_W   = {CFG['POLY_W']}       # weight of the quadratic model blended into th
 
 class NNEnsemble:
     # Ensemble of MLPs on the daf features; optional blend with a quadratic regression
-    def __init__(self, hidden=HIDDEN, alpha=ALPHA, n=N_BAG, use_moisture=True, poly_w=POLY_W):
+    # fx, fy: feature and target functions (default: the proximate -> ultimate task)
+    def __init__(self, hidden=HIDDEN, alpha=ALPHA, n=N_BAG, use_moisture=True, poly_w=POLY_W, fx=None, fy=None):
         self.hidden, self.alpha, self.n, self.use_m, self.poly_w = hidden, alpha, n, use_moisture, poly_w
+        self.fx = fx or (lambda d: features(d, self.use_m))
+        self.fy = fy or targets
     def fit(self, d):
-        X, Y = features(d, self.use_m), targets(d)
+        X, Y = self.fx(d), self.fy(d)
         self.xs, self.ys = StandardScaler().fit(X), StandardScaler().fit(Y)
         Xs, Ys = self.xs.transform(X), self.ys.transform(Y)
-        self.nets = [MLPRegressor(hidden_layer_sizes=self.hidden, alpha=self.alpha, learning_rate_init=1e-3,
+        if Ys.shape[1] == 1:
+            Ys = Ys.ravel()          # single target (reverse models): scikit-learn expects a 1-D y
+        self.nets =[MLPRegressor(hidden_layer_sizes=self.hidden, alpha=self.alpha, learning_rate_init=1e-3,
                                   max_iter=2000, early_stopping=True, validation_fraction=0.1,
                                   n_iter_no_change=40, random_state=SEED + i).fit(Xs, Ys) for i in range(self.n)]
         self.poly = None
@@ -189,14 +200,16 @@ class NNEnsemble:
             self.poly = LinearRegression().fit(PolynomialFeatures(2).fit_transform(Xs), Y)
         return self
     def predict_daf(self, d):
-        Xs = self.xs.transform(features(d, self.use_m))
-        p = self.ys.inverse_transform(np.mean([m.predict(Xs) for m in self.nets], axis=0))
+        Xs = self.xs.transform(self.fx(d))
+        p = self.ys.inverse_transform(np.mean([m.predict(Xs).reshape(len(Xs), -1) for m in self.nets], axis=0))
         if self.poly is not None:
-            p = (1 - self.poly_w) * p + self.poly_w * self.poly.predict(PolynomialFeatures(2).fit_transform(Xs))
+            q = self.poly.predict(PolynomialFeatures(2).fit_transform(Xs)).reshape(len(Xs), -1)
+            p = (1 - self.poly_w) * p + self.poly_w * q
         return p
 
 class SkModel:
-    def __init__(self, kind): self.kind = kind
+    def __init__(self, kind, fx=None, fy=None):
+        self.kind, self.fx, self.fy = kind, fx or features, fy or targets
     def fit(self, d):
         if self.kind == "Linear":
             self.m = make_pipeline(StandardScaler(), LinearRegression())
@@ -205,8 +218,8 @@ class SkModel:
         else:
             self.m = MultiOutputRegressor(HistGradientBoostingRegressor(max_iter=400, learning_rate=0.05,
                                           min_samples_leaf=20, l2_regularization=1.0, random_state=SEED))
-        self.m.fit(features(d), targets(d)); return self
-    def predict_daf(self, d): return self.m.predict(features(d))
+        self.m.fit(self.fx(d), self.fy(d)); return self
+    def predict_daf(self, d): return np.asarray(self.m.predict(self.fx(d))).reshape(len(d), -1)
 
 MODELS = {
     "Linear regression": lambda: SkModel("Linear"),
@@ -449,11 +462,224 @@ cmp
 """)
 
 md(r"""
-## 7. Conclusions
+# Part B — Ultimate → Proximate
+
+## 7. The reverse problem
+
+Given C, H, N, S and O (oxygen by difference) on an as-received or air-dried basis:
+
+$$\text{Org} = C + H + N + S + O, \qquad M + A = 100 - \text{Org}\quad\text{(exact)}$$
+
+So the ultimate analysis already fixes the **organic matter** and the **sum of moisture and ash** exactly. Two things are left to predict:
+
+1. **Volatile matter** of the organic substance, $VM_{daf}$. This is a coal-rank property, learned from the daf elemental composition ($C_{daf}, H_{daf}, N_{daf}, O_{daf}, S_{daf}$). Then $VM = VM_{daf}\cdot\text{Org}/100$ and $FC = \text{Org} - VM$.
+2. **How $M + A$ splits into moisture and ash.** The elemental analysis does not contain this information directly. The model estimates moisture per unit of organic matter, $M/\text{Org}$, from rank (low-rank coals hold more bed moisture). This is the least certain part. **If the lab reported the moisture, enter it and the moisture/ash split becomes exact.** Every ultimate-analysis certificate states the moisture of the analysis sample.
+
+Other bases follow directly:
+* On a **dry basis**, $A = 100 - \text{Org}$ exactly and $M = 0$, so only VM is predicted.
+* On a **dry, ash-free basis**, only $VM_{daf}$ and $FC_{daf}$ can be given unless M and A are supplied.
+
+Model selection used the same procedure as Part A (separate grid search, same validation). Findings:
+* Adding ash as an input did **not** improve the volatile-matter model.
+* The World Coal Quality Inventory did not change VM accuracy. It **did** improve the moisture/ash split for Indian coal (MAE 3.85 → 3.21 pp), because it contains many low-rank coals. It is therefore used for that sub-model only.
+""")
+
+code(r"""
+def ult_daf(d):
+    org = d[ULT].sum(axis=1).values
+    return np.column_stack([100 * d[k].values / org for k in ULT]), org
+
+def rev_vm_x(d):  return ult_daf(d)[0]                                                 # C,H,N,O,S daf
+def rev_m_x(d):   X, org = ult_daf(d); return np.column_stack([X, (100 - org) / org])  # + (M+A)/Org
+def rev_vm_y(d):  X, org = ult_daf(d); return (100 * d.VM.values / org)[:, None]       # VM daf
+def rev_m_y(d):   X, org = ult_daf(d); return (d.M.values / org)[:, None]              # M / Org
+
+def to_proximate(d, vm_daf, m_org=None, M_known=None):
+    # -> M, VM, Ash, FC on the same basis as the ultimate analysis
+    org = d[ULT].sum(axis=1).values
+    rest = np.clip(100 - org, 0, None)                    # M + Ash, exact
+    M = np.clip(M_known if M_known is not None else np.ravel(m_org) * org, 0, rest)
+    VM = np.clip(np.ravel(vm_daf), 0, 100) * org / 100
+    return np.column_stack([M, VM, rest - M, org - VM])
+
+REV = {  # task: (feature fn, target fn, final hidden layers, final alpha, use world data in training)
+    "VM": (rev_vm_x, rev_vm_y, (64, 64), 1e-1, False),
+    "M":  (rev_m_x,  rev_m_y,  (32, 32), 1e-2, True),
+}
+def rev_models(task):
+    fx, fy, h, a, _ = REV[task]
+    return {"Linear regression": lambda: SkModel("Linear", fx, fy),
+            "Quadratic regression": lambda: SkModel("Quadratic", fx, fy),
+            "Gradient boosting": lambda: SkModel("GB", fx, fy),
+            "Single neural network": lambda: NNEnsemble(h, a, n=1, poly_w=0.0, fx=fx, fy=fy),
+            f"FINAL: NN ensemble + {POLY_W:.0%} quadratic": lambda: NNEnsemble(h, a, fx=fx, fy=fy)}
+
+def rev_training_set(task, us_part, ind_part):
+    return pd.concat([us_part] + ([world] if REV[task][4] else []) + [ind_part] * K_INDIA, ignore_index=True)
+
+def rev_fold(task, name, which, tr, te):
+    if which == "India":
+        d, test = rev_training_set(task, us, ind.iloc[tr]), ind.iloc[te]
+    else:
+        d, test = rev_training_set(task, us.iloc[tr], ind), us.iloc[te]
+    return te, rev_models(task)[name]().fit(d).predict_daf(test)[:, 0]
+
+t0 = time.time()
+rjobs = [(t, n, w, tr, te) for t in REV for n in rev_models(t) for w, folds in (("India", ind_folds), ("US", us_folds))
+         for tr, te in folds]
+routs = Parallel(n_jobs=-1)(delayed(rev_fold)(*j) for j in rjobs)
+RCV = {}
+for (t, n, w, tr, te), (te_, p) in zip(rjobs, routs):
+    RCV.setdefault((t, n, w), np.zeros(len(ind) if w == "India" else len(us)))[te] = p
+print(f"reverse cross-validation finished in {time.time() - t0:.0f} s ({len(rjobs)} model fits)")
+
+rows = []
+for n in rev_models("VM"):
+    for w, d in (("India", ind), ("US", us)):
+        P = to_proximate(d, RCV[("VM", n, w)], RCV[("M", n, w)])
+        e = np.abs(P - d[["M", "VM", "Ash", "FC"]].values).mean(axis=0)
+        rows.append({"Model": n, "Test set": w, "M": e[0], "VM": e[1], "Ash": e[2], "FC": e[3],
+                     "VM daf": np.abs(RCV[("VM", n, w)] - rev_vm_y(d)[:, 0]).mean()})
+rmae = pd.DataFrame(rows)
+print("Ultimate -> proximate, as-received basis, only C/H/N/S/O known: MAE (percentage points) on held-out data")
+rmae.set_index(["Test set", "Model"]).sort_index().round(3)
+""")
+
+md(r"""
+### 7.1 Accuracy of the final reverse model in each situation
+""")
+
+code(r"""
+FINAL_R = f"FINAL: NN ensemble + {POLY_W:.0%} quadratic"
+scen = []
+for w, d in (("India (leave-one-site-out)", ind), ("US (grouped 5-fold)", us)):
+    key = "India" if w.startswith("India") else "US"
+    vm, mo = RCV[("VM", FINAL_R, key)], RCV[("M", FINAL_R, key)]
+    true = d[["M", "VM", "Ash", "FC"]].values
+    a = np.abs(to_proximate(d, vm, mo) - true).mean(axis=0)
+    b = np.abs(to_proximate(d, vm, M_known=d.M.values) - true).mean(axis=0)
+    dryf = 100 / (100 - d.M.values)                      # errors expressed on the dry basis
+    c = np.abs((to_proximate(d, vm, M_known=d.M.values) - true) * dryf[:, None]).mean(axis=0)
+    org = d[ULT].sum(axis=1).values
+    e = np.abs(vm - 100 * d.VM.values / org).mean()
+    scen += [{"Test set": w, "Input": "as-received C,H,N,S,O only", "M": a[0], "VM": a[1], "Ash": a[2], "FC": a[3]},
+             {"Test set": w, "Input": "as-received + measured moisture", "M": 0.0, "VM": b[1], "Ash": 0.0, "FC": b[3]},
+             {"Test set": w, "Input": "dry basis", "M": 0.0, "VM": c[1], "Ash": 0.0, "FC": c[3]},
+             {"Test set": w, "Input": "dry, ash-free basis", "M": np.nan, "VM": e, "Ash": np.nan, "FC": e}]
+SCEN = pd.DataFrame(scen)
+print("MAE (percentage points). 0.00 = exact by mass balance.")
+SCEN.set_index(["Test set", "Input"]).round(3)
+""")
+
+code(r"""
+fig, ax = plt.subplots(2, 4, figsize=(17, 7))
+for r, (w, d) in enumerate((("India", ind), ("US", us))):
+    P = to_proximate(d, RCV[("VM", FINAL_R, w)], RCV[("M", FINAL_R, w)])
+    for j, k in enumerate(["M", "VM", "Ash", "FC"]):
+        a = ax[r, j]; t = d[k].values
+        a.scatter(t, P[:, j], s=8 if w == "US" else 22, alpha=0.4 if w == "US" else 0.8,
+                  c="tab:blue" if w == "US" else "tab:red")
+        lo, hi = min(t.min(), P[:, j].min()), max(t.max(), P[:, j].max())
+        a.plot([lo, hi], [lo, hi], "k--", lw=1)
+        a.set(title=f"{w} – {k}  (R² = {r2_score(t, P[:, j]):.3f})", xlabel="measured %", ylabel="predicted %")
+plt.tight_layout(); plt.show()
+""")
+
+md(r"""
+**Reading the results.**
+* Volatile matter and fixed carbon are predicted to within roughly 1.5–2 pp.
+* Moisture and ash individually are the hard part when only C, H, N, S, O are known. Their **sum** is exact, but the split must be inferred from rank. Giving the measured moisture removes that error completely.
+* On a dry basis ash is exact, so only VM/FC carry error.
+
+### 7.2 External test of the volatile-matter model (60 unseen countries)
+""")
+
+code(r"""
+ext_vm = NNEnsemble(*REV["VM"][2:4], fx=rev_vm_x, fy=rev_vm_y).fit(rev_training_set("VM", us, ind))
+P = to_proximate(world, ext_vm.predict_daf(world), M_known=world.M.values)
+e = np.abs(P - world[["M", "VM", "Ash", "FC"]].values).mean(axis=0)
+print(f"World inventory (n={len(world)}, never used for the VM model), moisture given:  VM MAE {e[1]:.3f} pp | FC MAE {e[3]:.3f} pp")
+REV_EXT = {"VM": e[1], "FC": e[3]}
+""")
+
+md(r"""
+### 7.3 Final reverse models: train on all data, export, verify
+""")
+
+code(r"""
+final_rvm = ext_vm   # same model and training data (US + India), already fitted above
+final_rm = NNEnsemble(*REV["M"][2:4], fx=rev_m_x, fy=rev_m_y).fit(rev_training_set("M", us, ind))
+
+def acc_row(label, key):
+    sel = SCEN["Test set"].str.startswith(key)
+    r = SCEN[sel & (SCEN.Input == "as-received C,H,N,S,O only")].iloc[0]
+    rk = SCEN[sel & (SCEN.Input == "as-received + measured moisture")].iloc[0]
+    return {"Test set": label, "M": round(float(r.M), 3), "VM": round(float(r.VM), 3), "Ash": round(float(r.Ash), 3),
+            "FC": round(float(r.FC), 3), "VM (M given)": round(float(rk.VM), 3), "FC (M given)": round(float(rk.FC), 3)}
+
+with open(os.path.join(MODEL_DIR, "coal_model.json")) as f:
+    meta = json.load(f)
+Xr = rev_vm_x(rev_training_set("VM", us, ind))
+meta["reverse"] = {
+    "vm": export(final_rvm, ["C_daf", "H_daf", "N_daf", "O_daf", "S_daf"]),
+    "moist": export(final_rm, ["C_daf", "H_daf", "N_daf", "O_daf", "S_daf", "(M+A)/Org"]),
+    "hidden_vm": list(REV["VM"][2]), "hidden_m": list(REV["M"][2]),
+    "ranges": {"Cdaf": [float(Xr[:, 0].min()), float(Xr[:, 0].max())],
+               "Hdaf": [float(Xr[:, 1].min()), float(Xr[:, 1].max())],
+               "Odaf": [float(Xr[:, 3].min()), float(Xr[:, 3].max())]},
+    "accuracy": {"india": acc_row("India — unseen mines", "India"), "us": acc_row("US — unseen groups", "US"),
+                 "world_vm_moisture_given": {"VM": round(float(REV_EXT["VM"]), 3), "FC": round(float(REV_EXT["FC"]), 3)}},
+}
+meta["reverse"]["vm"]["targets"] = ["VM_daf"]; meta["reverse"]["moist"]["targets"] = ["M/Org"]
+with open(os.path.join(MODEL_DIR, "coal_model.json"), "w") as f:
+    json.dump(meta, f)
+print("reverse models added to", os.path.join(MODEL_DIR, "coal_model.json"),
+      f"({os.path.getsize(os.path.join(MODEL_DIR, 'coal_model.json')) / 1024:.0f} kB)")
+
+with open(os.path.join(MODEL_DIR, "coal_model.json")) as f:
+    loaded = json.load(f)
+full_r = rev_training_set("M", us, ind)
+for key, m, fx in (("vm", final_rvm, rev_vm_x), ("moist", final_rm, rev_m_x)):
+    diff = np.abs(numpy_forward(loaded["reverse"][key], fx(full_r)) - m.predict_daf(full_r)).max()
+    print(f"reverse {key:6s} max |numpy - sklearn| = {diff:.2e}")
+    assert diff < 1e-8
+""")
+
+md(r"""
+### 7.4 Using the reverse model
+""")
+
+code(r"""
+def predict_proximate(C, H, N, O, S, M=None):
+    d = pd.DataFrame({"C": [C], "H": [H], "N": [N], "O": [O], "S": [S]})
+    if C + H + N + O + S > 100:
+        raise ValueError("C + H + N + O + S must not exceed 100 %")
+    P = to_proximate(d, final_rvm.predict_daf(d), final_rm.predict_daf(d), M_known=None if M is None else np.array([M]))[0]
+    return pd.Series(P, index=["M", "VM", "Ash", "FC"]).round(2)
+
+for name, x in {"Indian high-ash bituminous (as-received)": dict(C=47.8, H=3.0, N=1.0, O=6.5, S=0.7),
+                "same, with measured moisture 6 %": dict(C=47.8, H=3.0, N=1.0, O=6.5, S=0.7, M=6.0),
+                "US Appalachian bituminous": dict(C=74.8, H=4.9, N=1.5, O=6.0, S=1.4),
+                "Indian lignite": dict(C=39.2, H=2.8, N=0.7, O=10.9, S=1.4)}.items():
+    print(f"{name:42s}", predict_proximate(**x).to_dict())
+
+# round trip on Indian samples: proximate -> ultimate -> proximate (moisture given)
+s = ind.sample(5, random_state=3).copy()
+back = pd.DataFrame(to_ultimate(s, final.predict_daf(s)), columns=ULT)
+P = to_proximate(back, final_rvm.predict_daf(back), M_known=s.M.values)
+rt = s[["Sample ID", "M", "VM", "Ash", "FC"]].reset_index(drop=True)
+rt[["M'", "VM'", "Ash'", "FC'"]] = P.round(2)
+print("\nRound trip (measured proximate -> predicted ultimate -> predicted proximate):")
+rt
+""")
+
+md(r"""
+## 8. Conclusions
 
 * A physics-guided neural-network ensemble (blended with a quadratic regression) predicts the ultimate analysis of coal from the proximate analysis with mean errors of roughly **1–2 pp for carbon, ~0.2 pp for hydrogen, ~0.1 pp for nitrogen and ~1 pp for oxygen** on coal sites that were *never* used in training, for both Indian and US coals (exact numbers in section 4). It carries over to 60 other countries that are entirely absent from training (section 4.2), with larger errors for the Gondwana coals of southern Africa, Brazil and Australia (about 2.5 pp for carbon). Different laboratories and the very inertinite-rich nature of those coals make them the hardest case.
 * Working on the dry, ash-free basis is the key step: it makes data from different countries and different reporting bases compatible and enforces C + H + N + S + O + M + Ash = 100 %.
 * On the large, diverse US set the neural networks clearly beat linear and quadratic correlations. On the small Indian set the simple correlations are marginally better (by about 0.03–0.04 pp on average), which is why the final model blends the network ensemble with a quadratic regression. It is the best compromise across both test sets, and averaging 10 networks makes it stable.
+* **Reverse direction.** From an ultimate analysis, moisture + ash is fixed exactly by mass balance, and volatile matter / fixed carbon are predicted to about 1.5–2 pp. The moisture/ash split is the uncertain part (a few pp) and becomes exact when the measured moisture is supplied (section 7.1).
 * **Limitations.** (1) Sulphur is not predictable from a proximate analysis — use a measured value when available. (2) The Indian training data cover the Sohagpur coalfield (Gondwana bituminous) and Rajasthan lignite; for other coalfields (e.g. high-sulphur north-eastern Tertiary coals) errors may be larger. (3) Ash is used as a proxy for mineral matter; for coals rich in carbonates or pyrite the volatile-matter correction is approximate. More open Indian data with both analyses would be the most valuable improvement.
 
 **References.** Palmer, C.A., et al. (2015) *U.S. Geological Survey COALQUAL database version 3.0*, USGS Data Series 975. Tewalt, S.J., et al. (2010) *A digital compilation of world coal quality data* (WoCQI), USGS OFR 2010-1196. Trippi, M.H. & Tewalt, S.J. (2011) *Geographic information system of coal-quality data for India and Bangladesh*, USGS OFR 2011-1296. IS 1350 (Part 1): Methods of test for coal and coke — proximate analysis. ASTM D3172 / D3176.

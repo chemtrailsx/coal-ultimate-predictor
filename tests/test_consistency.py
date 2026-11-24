@@ -16,7 +16,7 @@ import pandas as pd
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from coal_model import ELEMENTS, MODEL_PATH, CoalModel  # noqa: E402
+from coal_model import ELEMENTS, MODEL_PATH, PROXIMATE, CoalModel  # noqa: E402
 
 rng = np.random.default_rng(42)
 m = CoalModel()
@@ -83,4 +83,92 @@ for name in ("usgs_india_clean.csv", "coalqual_clean.csv"):
     mae = np.abs(P - d[ELEMENTS].values).mean(axis=0)
     print(name, "training-fit MAE:", dict(zip(ELEMENTS, mae.round(3))))
     assert mae[0] < 2.0 and mae[1] < 0.3
+
+# ====================================================================== ultimate -> proximate
+def run_js(cs):
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(cs, f)
+    res = json.loads(subprocess.run(["node", os.path.join(ROOT, "tests", "js_predict.js"), MODEL_PATH, f.name],
+                                    capture_output=True, text=True, check=True).stdout)
+    os.unlink(f.name)
+    return res
+
+rcases = []
+for i in range(2000):
+    basis = ["as-received", "air-dried", "dry", "daf"][i % 4]
+    rank = rng.uniform(0, 1)                          # lignite .. anthracite
+    cdaf = 68 + 26 * rank
+    hdaf = rng.uniform(3.0, 5.8) - 2.0 * max(rank - 0.8, 0)
+    ndaf, sdaf = rng.uniform(0.6, 2.0), rng.uniform(0.3, 4)
+    odaf = 100 - cdaf - hdaf - ndaf - sdaf
+    if odaf < 1:
+        continue
+    org = 100.0 if basis == "daf" else float(rng.uniform(25, 95))
+    U = [x * org / 100 for x in (cdaf, hdaf, ndaf, odaf, sdaf)]
+    M = A = None
+    rest = 100 - org
+    if basis in ("as-received", "air-dried"):
+        k = i % 3
+        if k == 1:
+            M = float(rng.uniform(0, rest))
+        elif k == 2:
+            A = float(rng.uniform(0, rest))
+    elif basis == "daf" and i % 2 == 0:
+        M = float(rng.uniform(0.5, 30)); A = float(rng.uniform(1, 40))
+    rcases.append(dict(dir="u2p", basis=basis, C=U[0], H=U[1], N=U[2], O=U[3], S=U[4], M=M, Ash=A))
+
+rjs = run_js(rcases)
+mx, mclose = 0.0, 0.0
+for c, j in zip(rcases, rjs):
+    q = m.predict_proximate(c["C"], c["H"], c["N"], c["O"], c["S"], basis=c["basis"], M=c["M"], Ash=c["Ash"])
+    assert "errors" not in j, (c, j)
+    assert j["src"] == q.moisture_source, (c, j["src"], q.moisture_source)
+    mx = max(mx, abs(j["daf"]["VM"] - q.daf["VM"]))
+    if q.basis_values["M"] is None:
+        assert j["basis"] is None
+        continue
+    pv = np.array([q.basis_values[k] for k in PROXIMATE]); jv = np.array([j["basis"][k] for k in PROXIMATE])
+    mx = max(mx, float(np.abs(pv - jv).max()))
+    assert (pv >= -1e-9).all(), (c, pv)
+    mclose = max(mclose, abs(pv.sum() - 100))
+    if c["basis"] != "daf":   # M + Ash must equal 100 - (C+H+N+O+S) exactly
+        assert abs(pv[0] + pv[2] - (100 - sum(c[k] for k in ELEMENTS))) < 1e-9
+    if c["M"] is not None:
+        assert abs(pv[0] - c["M"]) < 1e-9
+    if c["Ash"] is not None:
+        assert abs(pv[2] - c["Ash"]) < 1e-9
+print(f"{len(rcases)} reverse cases | max |Python - JavaScript| = {mx:.2e} pp | max closure error = {mclose:.2e} pp")
+assert mx < 1e-9 and mclose < 1e-9
+
+# vectorised batch path == single-sample path
+sub = [c for c in rcases if c["basis"] == "as-received"][:200]
+B = m.predict_proximate_arrays(*(np.array([c[k] for c in sub]) for k in ELEMENTS),
+                               M=np.array([np.nan if c["M"] is None else c["M"] for c in sub]))
+for c, b in zip(sub, B):
+    if c["Ash"] is not None:
+        continue
+    q = m.predict_proximate(c["C"], c["H"], c["N"], c["O"], c["S"], M=c["M"])
+    assert np.abs(b - [q.basis_values[k] for k in PROXIMATE]).max() < 1e-9
+print("batch and single-sample reverse predictions agree")
+
+rbad = [dict(dir="u2p", basis="as-received", C=70, H=5, N=1, O=20, S=10, M=None, Ash=None),     # sum > 100
+        dict(dir="u2p", basis="daf", C=60, H=4, N=1, O=10, S=1, M=None, Ash=None),             # daf not 100
+        dict(dir="u2p", basis="as-received", C=50, H=3, N=1, O=6, S=1, M=50, Ash=None),       # M > rest
+        dict(dir="u2p", basis="as-received", C=0, H=3, N=1, O=6, S=1, M=None, Ash=None)]      # C = 0
+assert all("errors" in x for x in run_js(rbad))
+for b in rbad:
+    try:
+        m.predict_proximate(b["C"], b["H"], b["N"], b["O"], b["S"], basis=b["basis"], M=b["M"])
+        raise AssertionError("should have failed: %s" % b)
+    except ValueError:
+        pass
+print("invalid reverse inputs rejected by both implementations")
+
+for name in ("usgs_india_clean.csv", "coalqual_clean.csv"):
+    d = pd.read_csv(os.path.join(ROOT, "data", name)).rename(columns=dict(SHORT, **{"Fixed Carbon": "FC"}))
+    P = m.predict_proximate_arrays(*(d[k].values for k in ELEMENTS))
+    mae = np.abs(P - d[PROXIMATE].values).mean(axis=0)
+    print(name, "reverse training-fit MAE:", dict(zip(PROXIMATE, mae.round(3))))
+    assert mae[1] < 2.5
+
 print("ALL CHECKS PASSED")

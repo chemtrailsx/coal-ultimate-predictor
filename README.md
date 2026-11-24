@@ -1,26 +1,35 @@
-# Coal Ultimate Analysis Predictor
+# Coal Proximate ⇄ Ultimate Predictor
 
-Predicts the **ultimate analysis** of coal (C, H, N, S, O) from its **proximate analysis** (moisture, volatile matter, ash, fixed carbon) with a neural-network ensemble. It works with US data (ASTM D3172/D3176, as-received basis) and Indian data (IS 1350, air-dried basis), and with dry-basis data.
+Converts the **proximate analysis** of coal (moisture, volatile matter, ash, fixed carbon) into the **ultimate analysis** (C, H, N, S, O), and the ultimate analysis back into the proximate analysis, with neural-network ensembles. It works with US data (ASTM D3172/D3176, as-received basis) and Indian data (IS 1350, air-dried basis), and with dry-basis data.
 
 ## Contents
 
 | Path | What it is |
 |---|---|
-| `Coal_Proximate_to_Ultimate_Model.ipynb` | The full model notebook: data, cleaning, feature engineering, model comparison, validation, final training and export. Submit this one. |
+| `Coal_Proximate_to_Ultimate_Model.ipynb` | The full model notebook for both directions: data, cleaning, feature engineering, model comparison, validation, final training and export. Part A covers proximate → ultimate and Part B covers ultimate → proximate. Submit this one. |
 | `data/` | Training and test data (USGS COALQUAL, USGS–GSI India, USGS World Coal Quality Inventory) |
 | `model/coal_model.json` | The trained model (network weights as plain numbers), written by the notebook |
 | `coal_model.py` | Prediction code using numpy only, shared by the app and the tests |
-| `app.py` | Streamlit web app: single sample, CSV batch, model information |
+| `app.py` | Streamlit web app with both directions: single sample, CSV batch, model information |
 | `web/index.html` | Stand-alone browser version, no server needed (for GitHub Pages) |
 | `tests/` | Consistency tests (Python vs JavaScript, closure to 100 %, input checks) |
 | `build_notebook.py`, `run_nb.py` | Regenerate and execute the notebook |
 
 ## Method
 
+**Proximate → ultimate**
+
 1. Organic matter is Org = 100 − M − Ash, and volatile matter on a dry, ash-free basis is VM_daf = 100·VM/Org.
 2. Inputs to the network are VM_daf, Ash/Org and M/Org. The ensemble averages 10 neural networks (32 × 32, ReLU), blended 70 : 30 with a quadratic regression. It predicts C, H, N and S on a dry, ash-free basis.
 3. O_daf = 100 − C − H − N − S. Each element is converted back to the input basis, so C + H + N + S + O + M + Ash = 100 % exactly.
 4. If a measured total sulphur value is given, it replaces the predicted one and oxygen is recalculated.
+
+**Ultimate → proximate**
+
+1. Org = C + H + N + O + S, so moisture + ash = 100 − Org is known exactly.
+2. One network ensemble (64 × 64, blended with a quadratic regression) predicts VM on a dry, ash-free basis from the dry, ash-free elemental composition. Then VM = VM_daf·Org/100 and FC = Org − VM.
+3. A second ensemble estimates how moisture + ash splits into moisture and ash. If the measured moisture (or ash) is given, the split is exact.
+4. Dry-basis input gives ash exactly. Dry, ash-free input gives VM and FC on a dry, ash-free basis, plus the full analysis if as-received moisture and ash are given.
 
 Validation works on whole sites, so the model is always scored on coal it never saw:
 - Indian mines are held out one at a time (leave-one-site-out).
@@ -59,5 +68,6 @@ To retrain, run `pip install scikit-learn matplotlib nbformat nbclient ipykernel
 ## Limitations
 
 - Sulphur cannot be predicted from a proximate analysis, so enter a measured value when you have one.
+- In the reverse direction the moisture/ash split is the least certain output unless the measured moisture is entered.
 - The Indian training data cover the Sohagpur coalfield and Rajasthan lignite, so errors may be larger for other coalfields.
 - Ash stands in for mineral matter, so coals rich in carbonates or pyrite get only an approximate correction.
