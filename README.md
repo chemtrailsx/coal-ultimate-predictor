@@ -2,6 +2,8 @@
 
 Converts the **proximate analysis** of coal (moisture, volatile matter, ash, fixed carbon) into the **ultimate analysis** (C, H, N, S, O), and the ultimate analysis back into the proximate analysis, with neural-network ensembles. It works with US data (ASTM D3172/D3176, as-received basis) and Indian data (IS 1350, air-dried basis), and with dry-basis data.
 
+**Live app:** https://coal-proximate-ultimate.streamlit.app
+
 ## Contents
 
 | Path | What it is |
