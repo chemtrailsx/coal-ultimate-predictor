@@ -1,0 +1,379 @@
+<title>Coal Ultimate Analysis Predictor</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Predict the ultimate analysis (C, H, N, S, O) of coal from its proximate analysis. Neural-network model trained on US and Indian coal data.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600;700&display=swap">
+<style>
+/* Layout: a lab assay sheet — input form on the left, result certificate on the right, method and accuracy below. */
+:root {
+  --bg: #f3f4f2;
+  --panel: #ffffff;
+  --ink: #1d2124;
+  --muted: #5d6468;
+  --line: #d7dad7;
+  --accent: #a4561c;      /* cinder / coke-oven amber */
+  --accent-soft: #f4e6da;
+  --warn-bg: #fbf1d9; --warn-fg: #6e4d05;
+  --err-bg: #f9e0dd; --err-fg: #8a2117;
+  /* composition bar colours */
+  --c-C: #2f3a40; --c-H: #4f86a8; --c-N: #7c9a5e; --c-S: #c9a227; --c-O: #c96f4a; --c-M: #9fc3d8; --c-A: #b8b2a6;
+  --f-head: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #15181a; --panel: #1e2225; --ink: #e6e8e6; --muted: #9aa2a6; --line: #343a3e;
+  --accent: #e08a48; --accent-soft: #3a2a1e; --warn-bg: #3a3017; --warn-fg: #f1d48a; --err-bg: #42201c; --err-fg: #f6b2a8;
+  --c-C: #d9dee0; --c-H: #6aa6cc; --c-N: #97b876; --c-S: #e0bb3e; --c-O: #e0875f; --c-M: #3f6a85; --c-A: #6d675d;
+  color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #15181a; --panel: #1e2225; --ink: #e6e8e6; --muted: #9aa2a6; --line: #343a3e;
+  --accent: #e08a48; --accent-soft: #3a2a1e; --warn-bg: #3a3017; --warn-fg: #f1d48a; --err-bg: #42201c; --err-fg: #f6b2a8;
+  --c-C: #d9dee0; --c-H: #6aa6cc; --c-N: #97b876; --c-S: #e0bb3e; --c-O: #e0875f; --c-M: #3f6a85; --c-A: #6d675d;
+  color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 15px/1.55 var(--f-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 28px 48px; }
+.wrap { max-width: 1120px; margin: 0 auto; display: grid; gap: 28px; }
+h1, h2, h3 { font-family: var(--f-head); text-wrap: balance; margin: 0; letter-spacing: 0.005em; }
+h1 { font-size: clamp(1.7rem, 3.4vw, 2.35rem); line-height: 1.1; }
+h2 { font-size: 1.25rem; }
+h3 { font-size: 1rem; }
+p { margin: 0; }
+.lede { color: var(--muted); max-width: 68ch; margin-top: 8px; }
+.eyebrow { font: 500 0.72rem/1 var(--f-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); margin-bottom: 10px; }
+.grid { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: 20px; align-items: start; }
+@media (max-width: 860px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 22px; display: grid; gap: 18px; min-width: 0; }
+.panel-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; border-bottom: 1px solid var(--line); padding-bottom: 12px; }
+.tag { font: 500 0.72rem var(--f-mono); color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
+
+/* basis selector */
+.seg { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+.seg input { position: absolute; opacity: 0; pointer-events: none; }
+.seg label { padding: 9px 8px; text-align: center; cursor: pointer; font-size: 0.86rem; line-height: 1.25; border-left: 1px solid var(--line); }
+.seg label:first-of-type { border-left: 0; }
+.seg label small { display: block; color: var(--muted); font-size: 0.72rem; }
+.seg input:checked + label { background: var(--accent-soft); color: var(--ink); box-shadow: inset 0 -2px 0 var(--accent); }
+.seg input:focus-visible + label { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.field { display: grid; gap: 5px; min-width: 0; }
+.field label { font-size: 0.84rem; color: var(--muted); }
+.field label b { color: var(--ink); font-weight: 600; }
+.field input, select { width: 100%; font: 500 1.05rem var(--f-mono); padding: 9px 10px; border: 1px solid var(--line); border-radius: 4px;
+  background: var(--bg); color: var(--ink); font-variant-numeric: tabular-nums; }
+select { font: 0.92rem var(--f-body); }
+.field input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+.field input:disabled { opacity: 0.55; }
+.field .hint { font-size: 0.75rem; color: var(--muted); }
+.optional { border-top: 1px dashed var(--line); padding-top: 14px; display: grid; gap: 14px; }
+.fc-line { font: 0.88rem var(--f-mono); color: var(--muted); display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.fc-line b { color: var(--ink); font-weight: 500; }
+
+/* results */
+.bigrow { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 520px) { .bigrow { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.el { border-top: 3px solid var(--sw); padding-top: 8px; min-width: 0; }
+.el .sym { font: 700 1.05rem var(--f-head); }
+.el .name { font-size: 0.72rem; color: var(--muted); display: block; }
+.el .val { font: 500 1.45rem/1.2 var(--f-mono); font-variant-numeric: tabular-nums; margin-top: 4px; }
+.el .pm { font: 0.74rem var(--f-mono); color: var(--muted); }
+.bar { display: flex; height: 26px; border-radius: 3px; overflow: hidden; border: 1px solid var(--line); }
+.bar span { display: block; height: 100%; transition: flex-basis 0.25s ease; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font: 0.76rem var(--f-mono); color: var(--muted); }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.tbl-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+th, td { padding: 7px 8px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { font: 500 0.72rem var(--f-mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+td { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+td:first-child { font-family: var(--f-body); }
+tr.sum td { color: var(--muted); border-bottom: 0; }
+.msgs { display: grid; gap: 8px; }
+.msg { padding: 9px 12px; border-radius: 4px; font-size: 0.86rem; }
+.msg.warn { background: var(--warn-bg); color: var(--warn-fg); }
+.msg.err { background: var(--err-bg); color: var(--err-fg); }
+.note { font-size: 0.8rem; color: var(--muted); }
+.btns { display: flex; flex-wrap: wrap; gap: 8px; }
+button { font: 500 0.84rem var(--f-body); padding: 7px 12px; border-radius: 4px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.below { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; }
+@media (max-width: 860px) { .below { grid-template-columns: minmax(0, 1fr); } }
+.method ol { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; max-width: 65ch; }
+.formula { font: 0.86rem var(--f-mono); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 10px 12px; overflow-x: auto; white-space: pre; }
+footer { font-size: 0.78rem; color: var(--muted); border-top: 1px solid var(--line); padding-top: 14px; display: grid; gap: 4px; }
+.loading { color: var(--muted); font-style: italic; }
+@media (prefers-reduced-motion: reduce) { .bar span { transition: none; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Proximate → Ultimate · neural network</div>
+    <h1>Coal Ultimate Analysis Predictor</h1>
+    <p class="lede">Enter moisture, volatile matter and ash from a proximate analysis. The model returns carbon, hydrogen, nitrogen, sulphur and oxygen. It accepts US (ASTM, as-received) and Indian (IS&nbsp;1350, air-dried) reporting, lignite to anthracite.</p>
+  </header>
+
+  <section class="grid">
+    <form class="panel" id="form" autocomplete="off" novalidate>
+      <div class="panel-head"><h2>Proximate analysis</h2><span class="tag">wt %</span></div>
+
+      <div class="field">
+        <label for="example">Load an example</label>
+        <select id="example">
+          <option value="">Choose a typical coal…</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <span class="hint" id="basis-label">Basis of your values</span>
+        <div class="seg" role="radiogroup" aria-labelledby="basis-label">
+          <input type="radio" name="basis" id="b-ar" value="as-received"><label for="b-ar">As-received<small>ARB · US / ASTM</small></label>
+          <input type="radio" name="basis" id="b-ad" value="air-dried" checked><label for="b-ad">Air-dried<small>ADB · India / IS 1350</small></label>
+          <input type="radio" name="basis" id="b-db" value="dry"><label for="b-db">Dry<small>DB</small></label>
+        </div>
+      </div>
+
+      <div class="fields">
+        <div class="field"><label for="M"><b>Moisture</b> (M)</label><input id="M" type="number" step="0.01" min="0" max="70" value="6.00" inputmode="decimal"></div>
+        <div class="field"><label for="VM"><b>Volatile matter</b> (VM)</label><input id="VM" type="number" step="0.01" min="0" max="80" value="24.00" inputmode="decimal"></div>
+        <div class="field"><label for="Ash"><b>Ash</b> (A)</label><input id="Ash" type="number" step="0.01" min="0" max="85" value="35.00" inputmode="decimal"></div>
+        <div class="field"><label for="FC"><b>Fixed carbon</b> (FC), optional</label><input id="FC" type="number" step="0.01" min="0" max="100" placeholder="by difference" inputmode="decimal">
+          <span class="hint">Only used to check that the four values add up to 100.</span></div>
+      </div>
+      <div class="fc-line"><span>FC by difference <b id="fc-diff">35.00</b></span><span>Organic matter (100 − M − A) <b id="org">59.00</b></span></div>
+
+      <div class="optional">
+        <div class="field"><label for="S"><b>Measured total sulphur</b>, optional</label><input id="S" type="number" step="0.01" min="0" max="20" placeholder="not measured" inputmode="decimal">
+          <span class="hint">A proximate analysis cannot reveal sulphur. If your lab measured it, enter it on the same basis. Oxygen is then recalculated.</span></div>
+        <div class="field" id="mdry-field" hidden><label for="Mdry"><b>Moisture of the original sample</b>, optional</label><input id="Mdry" type="number" step="0.01" min="0" max="70" placeholder="unknown" inputmode="decimal">
+          <span class="hint">Moisture tells the model about coal rank. Without it a less accurate sub-model is used.</span></div>
+      </div>
+    </form>
+
+    <section class="panel" aria-live="polite">
+      <div class="panel-head"><h2>Predicted ultimate analysis</h2><span class="tag" id="basis-tag">air-dried basis</span></div>
+      <div class="msgs" id="msgs"><p class="loading">Loading model…</p></div>
+      <div id="result" hidden>
+        <div style="display:grid; gap:18px">
+          <div class="bigrow" id="big"></div>
+          <div>
+            <div class="bar" id="bar" role="img" aria-label="Composition of the sample"></div>
+            <div class="legend" id="legend" style="margin-top:8px"></div>
+          </div>
+          <div class="tbl-wrap">
+            <table>
+              <thead><tr><th>Element</th><th id="th-basis">Air-dried</th><th>Dry</th><th>Dry ash-free</th><th>Typical error</th></tr></thead>
+              <tbody id="tbody"></tbody>
+            </table>
+          </div>
+          <div class="btns"><button type="button" id="copy">Copy results</button></div>
+          <p class="note">Typical error is the mean absolute error on Indian mines the model never saw during training, in percentage points (pp). Oxygen is by difference. H and O exclude the hydrogen and oxygen held in moisture.</p>
+        </div>
+      </div>
+    </section>
+  </section>
+
+  <section class="below">
+    <div class="panel method">
+      <h2>How it works</h2>
+      <ol>
+        <li><b>Strip out moisture and ash.</b> The composition of the organic coal substance depends on rank, which is the same physics in Indian and US coals. Working on a dry, ash-free basis also makes the method independent of the reporting basis.</li>
+        <li><b>Neural-network ensemble.</b> <span id="nn-desc">Several networks</span> read VM<sub>daf</sub>, ash/organic matter and moisture/organic matter, and predict C, H, N and S on a dry, ash-free basis.</li>
+        <li><b>Oxygen by difference</b>, then conversion back to your basis, so that the sum closes exactly.</li>
+      </ol>
+      <div class="formula">Org    = 100 − M − A
+VM_daf = 100 · VM / Org
+X      = X_daf · Org / 100      (X = C, H, N, S)
+O      = Org − C − H − N − S</div>
+    </div>
+    <div class="panel">
+      <h2>Accuracy on unseen coal</h2>
+      <p class="note">Mean absolute error in percentage points. Indian: each mine or block held out in turn. US: whole sample groups held out. World: 60 countries never used in training.</p>
+      <div class="tbl-wrap"><table><thead><tr><th>Test set</th><th>C</th><th>H</th><th>N</th><th>O</th><th>S</th></tr></thead><tbody id="acc"></tbody></table></div>
+      <p class="note" id="data-note"></p>
+    </div>
+  </section>
+
+  <footer>
+    <span>Data: USGS COALQUAL v3 (Palmer et al., 2015); USGS–Geological Survey of India, OFR 2011-1296 (Trippi &amp; Tewalt, 2011); USGS World Coal Quality Inventory, OFR 2010-1196 (Tewalt et al., 2010).</span>
+    <span>Sulphur is only a rough estimate unless you enter a measured value. Indian training data cover the Sohagpur coalfield and Rajasthan lignite; errors may be larger for other coalfields.</span>
+  </footer>
+</div>
+
+<script>
+// Pure functions below are also tested with Node against the Python implementation (tests/).
+// CORE-START
+const ELEMENTS = ["C", "H", "N", "O", "S"];
+function makeNet(spec) {
+  const net = { spec };
+  net.predictDaf = function (F) {               // F: array of feature vectors
+    const sp = spec;
+    return F.map(f => {
+      const xs = f.map((v, i) => (v - sp.x_mean[i]) / sp.x_scale[i]);
+      const acc = new Array(sp.y_mean.length).fill(0);
+      for (const m of sp.mlps) {
+        let h = xs;
+        for (let l = 0; l < m.W.length; l++) {
+          const W = m.W[l], b = m.b[l], out = b.slice();
+          for (let i = 0; i < h.length; i++) { const hi = h[i], Wi = W[i]; for (let j = 0; j < out.length; j++) out[j] += hi * Wi[j]; }
+          h = l < m.W.length - 1 ? out.map(v => (v > 0 ? v : 0)) : out;
+        }
+        for (let j = 0; j < acc.length; j++) acc[j] += h[j];
+      }
+      let p = acc.map((v, j) => (v / sp.mlps.length) * sp.y_scale[j] + sp.y_mean[j]);
+      if (sp.poly) {
+        const z = [1, ...xs];
+        for (let i = 0; i < xs.length; i++) for (let j = i; j < xs.length; j++) z.push(xs[i] * xs[j]);
+        const q = sp.poly.coef.map((row, t) => row.reduce((s, c, k) => s + c * z[k], sp.poly.intercept[t]));
+        const w = sp.poly.weight;
+        p = p.map((v, t) => (1 - w) * v + w * q[t]);
+      }
+      return p;
+    });
+  };
+  return net;
+}
+function predictOne(model, M, VM, Ash, S, moistureKnown) {   // returns [C,H,N,O,S] on the input basis
+  const org = 100 - M - Ash;
+  const f = moistureKnown ? [100 * VM / org, Ash / org, M / org] : [100 * VM / org, Ash / org];
+  const P = model[moistureKnown ? "with_moisture" : "no_moisture"].predictDaf([f])[0].map(v => Math.max(v, 0));
+  if (S !== null && S !== undefined && !Number.isNaN(S)) {
+    P[3] = 100 * S / org;
+    // a measured S is kept exactly: if C+H+N+S would exceed 100 (daf), scale C, H, N down instead
+    const chn = P[0] + P[1] + P[2];
+    if (chn + P[3] > 100) { const f = (100 - P[3]) / chn; P[0] *= f; P[1] *= f; P[2] *= f; }
+  }
+  const O = Math.max(100 - (P[0] + P[1] + P[2] + P[3]), 0);
+  let daf = [P[0], P[1], P[2], O, P[3]];
+  const tot = daf.reduce((a, b) => a + b, 0);
+  return daf.map(v => (100 * v / tot) * org / 100);
+}
+function predictFull(model, meta, inp) {
+  // inp: {basis, M, VM, Ash, FC (nullable), S (nullable), Mdry (nullable)}
+  const errors = [], warnings = [];
+  const M = inp.basis === "dry" ? 0 : inp.M, VM = inp.VM, Ash = inp.Ash;
+  if ([M, VM, Ash].some(v => v === null || Number.isNaN(v))) { errors.push("Enter moisture, volatile matter and ash."); return { errors, warnings }; }
+  if (Math.min(M, VM, Ash) < 0) errors.push("Values cannot be negative.");
+  const org = 100 - M - Ash, fc = org - VM;
+  if (fc < 0) errors.push(`Moisture + volatile matter + ash is ${(M + VM + Ash).toFixed(2)} %, more than 100 %. Check the values.`);
+  if (VM <= 0) errors.push("Volatile matter must be above zero.");
+  if (inp.FC !== null && !Number.isNaN(inp.FC) && Math.abs(M + VM + Ash + inp.FC - 100) > 1)
+    errors.push(`M + VM + Ash + FC = ${(M + VM + Ash + inp.FC).toFixed(2)} %, but it should be 100 %. Check that all four values are on the same basis.`);
+  if (inp.S !== null && !Number.isNaN(inp.S) && inp.S >= org) errors.push("Sulphur cannot be larger than the organic matter.");
+  if (errors.length) return { errors, warnings, fc, org };
+  const r = meta.ranges, vmdaf = 100 * VM / org, aorg = Ash / org;
+  if (org < 15) warnings.push("Less than 15 % organic matter: this is closer to carbonaceous shale than coal, outside the training range.");
+  if (vmdaf < r.VMdaf[0] || vmdaf > r.VMdaf[1]) warnings.push(`Volatile matter on a dry, ash-free basis is ${vmdaf.toFixed(1)} %, outside the training range (${r.VMdaf[0].toFixed(0)}–${r.VMdaf[1].toFixed(0)} %). Treat the result with caution.`);
+  if (aorg > r.A_org[1]) warnings.push("Ash is higher, relative to the organic matter, than in any training sample.");
+  const S = (inp.S === null || Number.isNaN(inp.S)) ? null : inp.S;
+  let out;
+  if (inp.basis === "dry") {
+    if (inp.Mdry !== null && !Number.isNaN(inp.Mdry) && inp.Mdry > 0 && inp.Mdry < 100) {
+      const f = (100 - inp.Mdry) / 100;
+      out = predictOne(model, inp.Mdry, VM * f, Ash * f, S === null ? null : S * f, true).map(v => v / f);
+    } else {
+      warnings.push("No moisture given: the model without moisture is used, which is less accurate because moisture helps it recognise coal rank.");
+      out = predictOne(model, 0, VM, Ash, S, false);
+    }
+  } else {
+    if (M / org > r.M_org[1]) warnings.push("Moisture is higher, relative to the organic matter, than in any training sample.");
+    out = predictOne(model, M, VM, Ash, S, true);
+  }
+  const basis = {}, dry = {}, daf = {};
+  ELEMENTS.forEach((k, i) => { basis[k] = out[i]; dry[k] = out[i] * 100 / (100 - M); daf[k] = 100 * out[i] / org; });
+  return { errors, warnings, basis, dry, daf, fc, org, M, Ash };
+}
+// CORE-END
+
+const NAMES = { C: "Carbon", H: "Hydrogen", N: "Nitrogen", O: "Oxygen", S: "Sulphur" };
+const BASIS_NAME = { "as-received": "As-received", "air-dried": "Air-dried", "dry": "Dry" };
+const EXAMPLES = [
+  ["Indian non-coking coal, high ash (Sohagpur-type)", "air-dried", 6.0, 24.0, 35.0],
+  ["Indian power-station coal, G11-type", "air-dried", 7.0, 22.0, 40.0],
+  ["Indian coking coal, washed (Jharia-type)", "air-dried", 1.2, 24.0, 17.0],
+  ["Indian lignite (Rajasthan / Neyveli-type)", "as-received", 35.0, 28.0, 10.0],
+  ["US Appalachian bituminous", "as-received", 2.5, 33.0, 9.0],
+  ["US Powder River Basin sub-bituminous", "as-received", 27.0, 31.0, 5.5],
+  ["US Pennsylvania anthracite", "as-received", 4.0, 5.0, 11.0],
+];
+const $ = id => document.getElementById(id);
+let MODEL = null, META = null, last = null;
+const num = id => { const v = $(id).value.trim(); return v === "" ? null : Number(v); };
+const fmt = v => v.toFixed(2);
+
+function render() {
+  if (!MODEL) return;
+  const basis = document.querySelector('input[name="basis"]:checked').value;
+  $("M").disabled = basis === "dry";
+  $("mdry-field").hidden = basis !== "dry";
+  const inp = { basis, M: basis === "dry" ? 0 : num("M"), VM: num("VM"), Ash: num("Ash"), FC: num("FC"), S: num("S"), Mdry: num("Mdry") };
+  const res = predictFull(MODEL, META, inp);
+  const Mv = basis === "dry" ? 0 : (inp.M ?? 0);
+  $("fc-diff").textContent = res.fc !== undefined ? fmt(res.fc) : "—";
+  $("org").textContent = res.org !== undefined ? fmt(res.org) : "—";
+  $("basis-tag").textContent = BASIS_NAME[basis].toLowerCase() + " basis";
+  $("th-basis").textContent = BASIS_NAME[basis];
+  const msgs = $("msgs"); msgs.innerHTML = "";
+  res.errors.forEach(e => { const d = document.createElement("div"); d.className = "msg err"; d.textContent = e; msgs.appendChild(d); });
+  res.warnings.forEach(e => { const d = document.createElement("div"); d.className = "msg warn"; d.textContent = e; msgs.appendChild(d); });
+  if (res.errors.length) { $("result").hidden = true; last = null; return; }
+  $("result").hidden = false;
+  last = { res, basis, inp };
+  const err = META.accuracy.india_mae, sKnown = inp.S !== null;
+  $("big").innerHTML = ELEMENTS.map(k => `<div class="el" style="--sw: var(--c-${k})"><span class="sym">${k}</span><span class="name">${NAMES[k]}</span>
+    <div class="val">${fmt(res.basis[k])}</div><span class="pm">${k === "S" && sKnown ? "measured" : "± " + err[k].toFixed(2)}</span></div>`).join("");
+  const parts = [...ELEMENTS.map(k => [k, res.basis[k]]), ["M", Mv], ["A", inp.Ash]];
+  $("bar").innerHTML = parts.map(([k, v]) => `<span style="flex-basis:${Math.max(v, 0)}%; background: var(--c-${k})" title="${k} ${fmt(v)} %"></span>`).join("");
+  $("legend").innerHTML = parts.map(([k, v]) => `<span><i style="background: var(--c-${k})"></i>${k === "A" ? "Ash" : k === "M" ? "Moisture" : k} ${fmt(v)}</span>`).join("");
+  const total = ELEMENTS.reduce((s, k) => s + res.basis[k], 0) + Mv + inp.Ash;
+  $("tbody").innerHTML = ELEMENTS.map(k => `<tr><td>${NAMES[k]}${k === "O" ? " (by difference)" : ""}</td><td>${fmt(res.basis[k])}</td><td>${fmt(res.dry[k])}</td><td>${fmt(res.daf[k])}</td>
+    <td>${k === "S" && sKnown ? "measured" : "± " + err[k].toFixed(2) + " pp"}</td></tr>`).join("") +
+    `<tr class="sum"><td>Sum with moisture and ash</td><td>${fmt(total)}</td><td></td><td>100.00</td><td></td></tr>`;
+}
+
+function setupStatic() {
+  const sel = $("example");
+  EXAMPLES.forEach((e, i) => { const o = document.createElement("option"); o.value = i; o.textContent = `${e[0]} (${e[1] === "air-dried" ? "ADB" : "ARB"})`; sel.appendChild(o); });
+  sel.addEventListener("change", () => {
+    if (sel.value === "") return;
+    const [, b, M, VM, A] = EXAMPLES[+sel.value];
+    document.querySelector(`input[name="basis"][value="${b}"]`).checked = true;
+    $("M").value = M.toFixed(2); $("VM").value = VM.toFixed(2); $("Ash").value = A.toFixed(2); $("FC").value = ""; $("S").value = "";
+    render();
+  });
+  $("form").addEventListener("input", e => { if (e.target.id !== "example") render(); });
+  $("form").addEventListener("submit", e => e.preventDefault());
+  $("copy").addEventListener("click", () => {
+    if (!last) return;
+    const { res, basis, inp } = last;
+    const lines = [`Proximate (${basis}): M ${fmt(basis === "dry" ? 0 : inp.M)}  VM ${fmt(inp.VM)}  Ash ${fmt(inp.Ash)}  FC ${fmt(res.fc)}`,
+      `Element\t${BASIS_NAME[basis]}\tDry\tDAF`, ...ELEMENTS.map(k => `${k}\t${fmt(res.basis[k])}\t${fmt(res.dry[k])}\t${fmt(res.daf[k])}`)];
+    const txt = lines.join("\n"), btn = $("copy");
+    const done = ok => { btn.textContent = ok ? "Copied" : "Select and copy the table"; setTimeout(() => (btn.textContent = "Copy results"), 1600); };
+    try { navigator.clipboard.writeText(txt).then(() => done(true), () => done(false)); } catch (e) { done(false); }
+  });
+}
+
+async function init() {
+  setupStatic();
+  try {
+    let r = await fetch("coal_model.json").catch(() => null);
+    if (!r || !r.ok) r = await fetch("../model/coal_model.json");   // repository layout (GitHub Pages)
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    META = await r.json();
+    MODEL = { with_moisture: makeNet(META.models.with_moisture), no_moisture: makeNet(META.models.no_moisture) };
+    $("nn-desc").textContent = `${META.n_mlps} neural networks (hidden layers ${META.hidden.join(" × ")}, blended with a quadratic regression)`;
+    $("acc").innerHTML = META.accuracy.table.map(t => `<tr><td>${t["Test set"]}</td>${ELEMENTS.map(k => `<td>${t[k].toFixed(2)}</td>`).join("")}</tr>`).join("");
+    $("data-note").textContent = "Training data: " + META.data.map(d => `${d.Dataset}: ${d.Samples.toLocaleString("en")}`).join(" · ");
+    render();
+  } catch (e) {
+    $("msgs").innerHTML = `<div class="msg err">The model file could not be loaded (${e.message}). Reload the page to try again.</div>`;
+  }
+}
+init();
+</script>
